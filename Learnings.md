@@ -1,6 +1,6 @@
 # LEARNINGS
 
-> Last updated: Sun 25 Oct 2026 (language decision, prior art, how to read results).
+> Last updated: Sat 31 Oct 2026 (pytest, failure kinds, defaults, mocking).
 > Sections: 1 Concepts, 2 Code explained, 3 Bugs, 4 Mistakes and lessons, 5 Interview questions.
 
 ---
@@ -70,6 +70,37 @@ WER counts every difference from a single reference spelling as an error. Indian
 ### 1.8 Why "10 out of 10 correct" proves little
 If the system truly failed about 26% of the time, you would still see 10 clean passes roughly 1 time in 20. So 10/10 is consistent with a true failure rate of up to about a quarter. 100/100 passes brings that ceiling down to about 3% (rule of thumb: ceiling is roughly 3 divided by the number of tests). Comparing two conditions needs more still.
 Also, clean synthetic speech from Gnani's own TTS may be unusually easy for Gnani's own STT, so passes on clean synthetic audio say little about real callers. That is why the phone-line degradation and a small set of real recordings matter. The interesting results are the *breaking points*: which entity types fail first, and at what noise level.
+
+### Observations from 10/10 PASS on comparing between Prisma-v2.0 and Prisma-v3.0
+- The models write the same thing differently: v2.5 gives ₹5,00,000 and 09:30, while v3.0 gives 5,00,000 रुपये and 9:30. The comparer tolerates both, which is why it exists.
+- Both returned the evening time as 5:15 with the word शाम, not 17:15. Gnani’s ITN docs show a similar phrase becoming 17:00. The "बजकर … मिनट" wording may explain it, but it’s worth testing.
+- A loophole in our own tool: compare_time ignores AM/PM, so that PASS doesn’t prove it heard PM. A lenient comparer can hide failures, so keep that in mind when the results look too good.
+
+### 1.9 What `pytest -q` is (and why the output is green)
+`pytest` is not a special command: it finds files named `test_*.py`, runs every function starting with `test_`, and reports. `-q` means *quiet* (shorter output: one dot per passing test and a summary line); `-v` is the opposite (every test name). The colours are pytest's own: green = passed, red = failed, yellow = warnings or skips. It only colours when it detects a terminal.
+
+### 1.10 Reading the entity comparer's failure kinds
+The comparer does more than say pass/fail; it names *how* an entity failed: `not_found` (the number never appeared, often because the model wrote words instead of digits), `length_mismatch` (digits dropped or added), `substitution` (same length, a wrong digit) and `wrong_value` (amount or time parsed but different). The report will count these. "Same" is defined per entity type: digits only for phones/PINs, numeric value for amounts, 12-hour clock for times (AM/PM not checked yet).
+
+### 1.11 Never trust defaults; verify what the server actually ran
+Prisma v3.0 is opt-in and the default output style differs by model and request. The reply contains a `model` field, so `roundtrip.py` compares it with what we asked for and prints a warning if they differ. Rule of thumb: send every setting that can change the answer explicitly, include each in the cache key, and check the server's echo. Gnani's own docs also note that identical audio can differ by a borderline word between runs, which is another reason to cache.
+
+### 1.12 Mocking the network in tests
+`tests/test_clients.py` replaces `requests.post` with a fake, points the cache at a temporary folder, and sets a fake API key (pytest's `monkeypatch` and `tmp_path`). The client code can then be tested (does the cache hit? is the model sent? is an HTTP error raised and not cached?) with zero credits, zero network, and instant results.
+
+### What the fake network was for ?
+A fake (or mock) is a stand-in object that replaces a real dependency during a test. Ours swaps requests.post for a fake function, uses a throwaway cache folder (tmp_path), and sets a fake API key. It matters because:
+
+- Cost and speed. Real calls spend credits and need internet. Fake ones are instant and free.
+- Failures on demand. You can’t ask Gnani to return a 400 or 429 whenever you like, but a fake can, so we can test that errors raise and aren’t cached.
+- What it tests. It checks our logic: that model and format are sent, that the cache key reacts to them, and that a second identical call makes no request.
+
+### Finding the breaking point
+We make the audio worse until the models start failing. degrade.py damages a clip in the same order as real life:
+
+- Noise at the microphone, set by SNR in decibels: 20 dB is mild, 10 is moderate, 5 is heavy, and 0 dB means the noise is as loud as the voice.
+- The phone network: resample to 8 kHz (with a low-pass filter first, so you avoid aliasing), keep only 300–3400 Hz, then compress to 8 bits with µ-law, which keeps quiet detail at the cost of loud detail.
+- Packet loss (built, not used in this sweep yet): silence random 20 ms chunks.
 
 ---
 
@@ -177,6 +208,8 @@ None yet. Template for later:
 - **Don't commit before `.gitignore` exists.** The API key lives in `.env`; if it is committed, rotate the key. Lesson: create `.gitignore` before the first `git add`.
 - **We started in Python without choosing it.** The hello scripts just began in Python and the docs had a blank where the reason should be. We then compared alternatives and recorded the decision honestly (section 1.6). Lesson: when a default creeps in, evaluate it explicitly while switching is still cheap.
 - **The core idea already has prior art.** Searching only after designing the project showed commercial tools and research papers on similar ideas (PROJECT.md section 6). Lesson: check prior art early, and state how your work differs.
+- **A pytest import gotcha.** Plain `pytest` failed with `ModuleNotFoundError: No module named 'voicetest'` because the project root was not on Python's import path. Fix: a `pytest.ini` containing `pythonpath = .` (or run `python -m pytest`). Lesson: tests that cannot import your code are a path problem, not a code problem.
+- **We tested against a model version we did not choose.** Prisma v3.0 launched mid-project and is opt-in, so every earlier call ran on the default. Lesson: pin and record the model on every call.
 
 ---
 
@@ -194,3 +227,6 @@ None yet. Template for later:
 10. How did you pick your language, and what would make you switch? (Section 1.6)
 11. Why is word error rate a poor metric for Indian languages, and what would you measure instead? (Section 1.7)
 12. You ran 10 tests and all passed. What can you conclude? What if it was 100? (Section 1.8)
+13. Why send `model` and `format` explicitly instead of relying on API defaults? (Section 1.11)
+14. How do you test code that calls a paid external API without calling it? (Section 1.12)
+15. A vendor releases a new model version mid-project. What do you change in your test tool? (PROJECT.md decision 10)
